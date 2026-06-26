@@ -69,11 +69,47 @@ namespace Headwind.GitSync.Presentation.Views
         private void OnGUI()
         {
             EnsureStyles();
+
+            // 비동기 작업 중 모든 컨트롤 입력 차단
+            var prevEnabled = GUI.enabled;
+            if (_vm.IsBusy) GUI.enabled = false;
+
             DrawHeader();
             DrawRemoteSection();
             DrawFileList();
             DrawActionArea();
             DrawStatusBar();
+
+            GUI.enabled = prevEnabled;
+
+            // 로딩 오버레이는 맨 마지막에 그려 모든 UI 위에 표시
+            if (_vm.IsBusy)
+                DrawLoadingOverlay();
+        }
+
+        private void DrawLoadingOverlay()
+        {
+            var overlayRect = new Rect(0, 0, position.width, position.height);
+
+            // 반투명 배경
+            EditorGUI.DrawRect(overlayRect, new Color(0f, 0f, 0f, 0.4f));
+
+            // 애니메이션 점 (0~3개 반복)
+            int dotCount = (int)(EditorApplication.timeSinceStartup * 2.5) % 4;
+            var baseMsg  = _vm.StatusMessage.TrimEnd('.', '…', ' ');
+            var animated = baseMsg + new string('.', dotCount);
+
+            var labelStyle = new GUIStyle(EditorStyles.boldLabel)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                wordWrap  = true,
+                fontSize  = 13,
+                normal    = { textColor = Color.white },
+            };
+            GUI.Label(overlayRect, animated, labelStyle);
+
+            // 애니메이션 유지를 위해 계속 Repaint
+            Repaint();
         }
 
         private void EnsureStyles()

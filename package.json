@@ -1,0 +1,25 @@
+{
+  "name": "com.headwind.gitsync",
+  "version": "1.0.0",
+  "displayName": "GitSync - Git LFS Visual Tool",
+  "description": "A Unity Editor extension for designers to manage Git status, commits, and Git LFS file locking without needing CLI knowledge. Supports one-button Sync (commit + pull + push) and per-file LFS lock/unlock.",
+  "unity": "2021.3",
+  "unityRelease": "0f1",
+  "documentationUrl": "",
+  "changelogUrl": "",
+  "licensesUrl": "",
+  "author": {
+    "name": "Headwind",
+    "email": "",
+    "url": ""
+  },
+  "keywords": [
+    "git",
+    "lfs",
+    "vcs",
+    "version control",
+    "designer",
+    "editor tool"
+  ],
+  "dependencies": {}
+}

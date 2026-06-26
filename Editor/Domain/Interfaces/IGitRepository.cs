@@ -31,5 +31,10 @@ namespace Headwind.GitSync.Domain.Interfaces
         /// origin이 없으면 add, 있으면 set-url을 실행합니다.
         /// </summary>
         Task<(bool success, string message)> SetRemoteUrlAsync(string url);
+
+        /// <summary>
+        /// .gitattributes 기준으로 해당 파일이 LFS 추적 대상인지 확인합니다.
+        /// </summary>
+        Task<bool> IsLfsTrackedAsync(string relativePath);
     }
 }

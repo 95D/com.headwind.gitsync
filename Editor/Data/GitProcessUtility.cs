@@ -41,7 +41,7 @@ namespace Headwind.GitSync.Data
             return Task.Run(() => RunBlocking(workingDirectory, arguments));
         }
 
-        private static ProcessResult RunBlocking(string workingDirectory, string arguments)
+        internal static ProcessResult RunBlocking(string workingDirectory, string arguments)
         {
             var startInfo = new ProcessStartInfo
             {

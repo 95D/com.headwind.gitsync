@@ -48,6 +48,7 @@ namespace Headwind.GitSync.Data
             if (locksResult.IsSuccess)
             {
                 var locks = GitDataParser.ParseLfsLocks(locksResult.Stdout, userName);
+                GitLockCache.Update(locks, userName);
                 GitDataParser.MergeLockInfo(fileStates, locks);
             }
 
@@ -129,6 +130,12 @@ namespace Headwind.GitSync.Data
             return result.IsSuccess
                 ? (true, $"Remote 설정 완료: {url}")
                 : (false, result.Stderr);
+        }
+
+        public async Task<bool> IsLfsTrackedAsync(string relativePath)
+        {
+            var result = await GitProcessUtility.RunAsync(_repoRoot, $"check-attr filter -- \"{relativePath}\"");
+            return result.IsSuccess && result.Stdout.Contains(": filter: lfs");
         }
 
         // ── Private helpers ───────────────────────────────────────────────────

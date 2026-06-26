@@ -50,6 +50,31 @@ namespace Headwind.GitSync.Data
                 var locks = GitDataParser.ParseLfsLocks(locksResult.Stdout, userName);
                 GitLockCache.Update(locks, userName);
                 GitDataParser.MergeLockInfo(fileStates, locks);
+
+                // git status에 없지만 내가 Lock한 파일도 목록에 추가
+                foreach (var kvp in locks)
+                {
+                    if (!kvp.Value.IsOwnedByMe) continue;
+                    var path = kvp.Key;
+                    bool alreadyListed = false;
+                    foreach (var f in fileStates)
+                    {
+                        if (string.Equals(f.RelativePath, path, System.StringComparison.OrdinalIgnoreCase))
+                        {
+                            alreadyListed = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyListed)
+                    {
+                        fileStates.Add(new FileState
+                        {
+                            RelativePath = path,
+                            ChangeStatus = FileChangeStatus.Locked,
+                            LfsLock      = kvp.Value,
+                        });
+                    }
+                }
             }
 
             return fileStates;

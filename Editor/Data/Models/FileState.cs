@@ -7,6 +7,8 @@ namespace Headwind.GitSync.Data.Models
         Deleted,
         Renamed,
         Untracked,
+        /// <summary>git status에는 없지만 LFS Lock이 걸려있는 파일.</summary>
+        Locked,
     }
 
     /// <summary>

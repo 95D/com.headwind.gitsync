@@ -337,6 +337,7 @@ namespace Headwind.GitSync.Presentation.Views
                 FileChangeStatus.Deleted   => ("D", ColorDeleted),
                 FileChangeStatus.Renamed   => ("R", ColorRenamed),
                 FileChangeStatus.Untracked => ("?", ColorUntracked),
+                FileChangeStatus.Locked    => ("=", ColorLockedMe),
                 _                          => ("M", ColorModified),
             };
         }

@@ -14,10 +14,13 @@ namespace Headwind.GitSync.Domain.Interfaces
         Task<string> GetCurrentUserNameAsync();
         Task<List<FileState>> GetStatusAsync();
 
+        /// <summary>git pull --rebase</summary>
+        Task<(bool success, string log)> FetchAsync();
+
         /// <summary>
-        /// Runs: git add . → git commit -m message → git pull --rebase → git push
+        /// 지정된 파일만 git add → commit → push 합니다.
         /// </summary>
-        Task<(bool success, string log)> SyncAsync(string commitMessage);
+        Task<(bool success, string log)> UploadAsync(string commitMessage, System.Collections.Generic.IEnumerable<string> paths);
 
         Task<(bool success, string message)> LockFileAsync(string relativePath);
         Task<(bool success, string message)> UnlockFileAsync(string relativePath);
@@ -32,9 +35,5 @@ namespace Headwind.GitSync.Domain.Interfaces
         /// </summary>
         Task<(bool success, string message)> SetRemoteUrlAsync(string url);
 
-        /// <summary>
-        /// .gitattributes 기준으로 해당 파일이 LFS 추적 대상인지 확인합니다.
-        /// </summary>
-        Task<bool> IsLfsTrackedAsync(string relativePath);
     }
 }

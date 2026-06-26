@@ -34,6 +34,12 @@ namespace Headwind.GitSync.Data
         public static bool IsLockedByOther(string path)
             => _locks.TryGetValue(Normalize(path), out var info) && !info.IsOwnedByMe;
 
+        /// <summary>현재 캐시 기준으로 내가 Lock한 파일 경로 목록을 반환합니다.</summary>
+        public static List<string> GetMyLockedPaths()
+            => _locks.Where(kvp => kvp.Value.IsOwnedByMe)
+                     .Select(kvp => kvp.Key)
+                     .ToList();
+
         static string Normalize(string path) => path.Replace('\\', '/').TrimStart('/');
     }
 }

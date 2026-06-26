@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Headwind.GitSync.Data.Models;
@@ -34,20 +35,18 @@ namespace Headwind.GitSync.Data
 
         public async Task<List<FileState>> GetStatusAsync()
         {
-            // Run git status and git config user.name concurrently
             var statusTask = GitProcessUtility.RunAsync(_repoRoot, "status --porcelain");
             var userTask   = GetCurrentUserNameAsync();
-
             await Task.WhenAll(statusTask, userTask);
 
             var fileStates = GitDataParser.ParseGitStatus(statusTask.Result.Stdout);
             var userName   = userTask.Result;
 
-            // LFS locks — --verify 로 서버가 직접 소유권을 마킹하도록 요청.
-            // 실패(오프라인·구버전 git-lfs)하면 일반 lfs locks 로 fallback.
+            // --verify 로 서버가 소유권을 직접 마킹. 실패 시 일반 lfs locks 로 fallback.
             var locksResult = await GitProcessUtility.RunAsync(_repoRoot, "lfs locks --verify");
             if (!locksResult.IsSuccess)
                 locksResult = await GitProcessUtility.RunAsync(_repoRoot, "lfs locks");
+
             if (locksResult.IsSuccess)
             {
                 var locks = GitDataParser.ParseLfsLocks(locksResult.Stdout, userName);
@@ -59,15 +58,8 @@ namespace Headwind.GitSync.Data
                 {
                     if (!kvp.Value.IsOwnedByMe) continue;
                     var path = kvp.Key;
-                    bool alreadyListed = false;
-                    foreach (var f in fileStates)
-                    {
-                        if (string.Equals(f.RelativePath, path, System.StringComparison.OrdinalIgnoreCase))
-                        {
-                            alreadyListed = true;
-                            break;
-                        }
-                    }
+                    bool alreadyListed = fileStates.Any(f =>
+                        string.Equals(f.RelativePath, path, System.StringComparison.OrdinalIgnoreCase));
                     if (!alreadyListed)
                     {
                         fileStates.Add(new FileState
@@ -83,33 +75,42 @@ namespace Headwind.GitSync.Data
             return fileStates;
         }
 
-        public async Task<(bool success, string log)> SyncAsync(string commitMessage)
+        public async Task<(bool success, string log)> FetchAsync()
         {
-            var log = new StringBuilder();
-
             var remoteCheck = await ValidateRemoteAsync();
-            if (!remoteCheck.valid)
-                return (false, remoteCheck.message);
+            if (!remoteCheck.valid) return (false, remoteCheck.message);
 
-            var addResult = await GitProcessUtility.RunAsync(_repoRoot, "add .");
+            var result = await GitProcessUtility.RunAsync(_repoRoot, "pull --rebase");
+            return result.IsSuccess
+                ? (true, "pull --rebase 완료.")
+                : (false, result.Stderr);
+        }
+
+        public async Task<(bool success, string log)> UploadAsync(
+            string commitMessage, IEnumerable<string> paths)
+        {
+            var remoteCheck = await ValidateRemoteAsync();
+            if (!remoteCheck.valid) return (false, remoteCheck.message);
+
+            var log      = new StringBuilder();
+            var pathList = paths.ToList();
+
+            // git add <locked files only>
+            var quotedPaths = string.Join(" ", pathList.Select(p => $"\"{p}\""));
+            var addResult   = await GitProcessUtility.RunAsync(_repoRoot, $"add {quotedPaths}");
             log.AppendLine($"[add] {(addResult.IsSuccess ? "OK" : addResult.Stderr)}");
-            if (!addResult.IsSuccess)
-                return (false, log.ToString());
+            if (!addResult.IsSuccess) return (false, log.ToString());
 
-            var safeMessage  = commitMessage.Replace("\"", "\\\"");
-            var commitResult = await GitProcessUtility.RunAsync(_repoRoot, $"commit -m \"{safeMessage}\"");
+            // git commit
+            var safeMsg     = commitMessage.Replace("\"", "\\\"");
+            var commitResult = await GitProcessUtility.RunAsync(_repoRoot, $"commit -m \"{safeMsg}\"");
             log.AppendLine($"[commit] {(commitResult.IsSuccess ? "OK" : commitResult.Stderr)}");
 
             bool nothingToCommit = commitResult.Stdout.Contains("nothing to commit")
                                 || commitResult.Stderr.Contains("nothing to commit");
-            if (!commitResult.IsSuccess && !nothingToCommit)
-                return (false, log.ToString());
+            if (!commitResult.IsSuccess && !nothingToCommit) return (false, log.ToString());
 
-            var pullResult = await GitProcessUtility.RunAsync(_repoRoot, "pull --rebase");
-            log.AppendLine($"[pull --rebase] {(pullResult.IsSuccess ? "OK" : pullResult.Stderr)}");
-            if (!pullResult.IsSuccess)
-                return (false, log.ToString());
-
+            // git push
             var pushResult = await GitProcessUtility.RunAsync(_repoRoot, "push");
             log.AppendLine($"[push] {(pushResult.IsSuccess ? "OK" : pushResult.Stderr)}");
 
@@ -119,8 +120,7 @@ namespace Headwind.GitSync.Data
         public async Task<(bool success, string message)> LockFileAsync(string relativePath)
         {
             var remoteCheck = await ValidateRemoteAsync();
-            if (!remoteCheck.valid)
-                return (false, remoteCheck.message);
+            if (!remoteCheck.valid) return (false, remoteCheck.message);
 
             var result = await GitProcessUtility.RunAsync(_repoRoot, $"lfs lock \"{relativePath}\"");
             return result.IsSuccess
@@ -131,8 +131,7 @@ namespace Headwind.GitSync.Data
         public async Task<(bool success, string message)> UnlockFileAsync(string relativePath)
         {
             var remoteCheck = await ValidateRemoteAsync();
-            if (!remoteCheck.valid)
-                return (false, remoteCheck.message);
+            if (!remoteCheck.valid) return (false, remoteCheck.message);
 
             var result = await GitProcessUtility.RunAsync(_repoRoot, $"lfs unlock \"{relativePath}\"");
             return result.IsSuccess
@@ -148,7 +147,6 @@ namespace Headwind.GitSync.Data
 
         public async Task<(bool success, string message)> SetRemoteUrlAsync(string url)
         {
-            // origin이 이미 있으면 set-url, 없으면 add
             var existing = await GetRemoteUrlAsync();
             var command  = string.IsNullOrEmpty(existing)
                 ? $"remote add origin \"{url}\""
@@ -160,17 +158,8 @@ namespace Headwind.GitSync.Data
                 : (false, result.Stderr);
         }
 
-        public async Task<bool> IsLfsTrackedAsync(string relativePath)
-        {
-            var result = await GitProcessUtility.RunAsync(_repoRoot, $"check-attr filter -- \"{relativePath}\"");
-            return result.IsSuccess && result.Stdout.Contains(": filter: lfs");
-        }
-
         // ── Private helpers ───────────────────────────────────────────────────
 
-        /// <summary>
-        /// LFS lock/unlock, Sync 실행 전 remote 존재 여부를 확인합니다.
-        /// </summary>
         private async Task<(bool valid, string message)> ValidateRemoteAsync()
         {
             var url = await GetRemoteUrlAsync();
@@ -178,7 +167,6 @@ namespace Headwind.GitSync.Data
                 return (false,
                     "원격 저장소(Remote)가 설정되지 않았습니다.\n" +
                     "GitSync 창 상단의 Remote 설정에서 URL을 입력해 주세요.");
-
             return (true, string.Empty);
         }
     }

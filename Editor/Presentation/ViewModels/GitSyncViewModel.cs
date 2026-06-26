@@ -26,36 +26,31 @@ namespace Headwind.GitSync.Presentation.ViewModels
 
         // ── Remote state ──────────────────────────────────────────────────────
 
-        /// <summary>현재 저장된 origin URL. 없으면 빈 문자열.</summary>
         public string RemoteUrl        { get; private set; } = string.Empty;
-
-        /// <summary>UI 입력 필드에 바인딩되는 임시 값.</summary>
         public string PendingRemoteUrl { get; set; } = string.Empty;
-
         public bool HasRemote => !string.IsNullOrEmpty(RemoteUrl);
 
-        /// <summary>Raised on the Unity main thread after any state mutation.</summary>
         public event Action OnStateChanged;
 
         // ── Use cases ─────────────────────────────────────────────────────────
 
-        private readonly GetGitStatusUseCase  _getStatusUseCase;
-        private readonly SyncUseCase          _syncUseCase;
-        private readonly LockFileUseCase      _lockUseCase;
-        private readonly UnlockFileUseCase    _unlockUseCase;
-        private readonly GetRemoteUrlUseCase  _getRemoteUrlUseCase;
-        private readonly SetRemoteUrlUseCase  _setRemoteUrlUseCase;
-        private readonly IsLfsTrackedUseCase  _isLfsTrackedUseCase;
+        private readonly GetGitStatusUseCase _getStatusUseCase;
+        private readonly FetchUseCase        _fetchUseCase;
+        private readonly UploadUseCase       _uploadUseCase;
+        private readonly LockFileUseCase     _lockUseCase;
+        private readonly UnlockFileUseCase   _unlockUseCase;
+        private readonly GetRemoteUrlUseCase _getRemoteUrlUseCase;
+        private readonly SetRemoteUrlUseCase _setRemoteUrlUseCase;
 
         public GitSyncViewModel(IGitRepository repository)
         {
             _getStatusUseCase    = new GetGitStatusUseCase(repository);
-            _syncUseCase         = new SyncUseCase(repository);
+            _fetchUseCase        = new FetchUseCase(repository);
+            _uploadUseCase       = new UploadUseCase(repository);
             _lockUseCase         = new LockFileUseCase(repository);
             _unlockUseCase       = new UnlockFileUseCase(repository);
             _getRemoteUrlUseCase = new GetRemoteUrlUseCase(repository);
             _setRemoteUrlUseCase = new SetRemoteUrlUseCase(repository);
-            _isLfsTrackedUseCase = new IsLfsTrackedUseCase(repository);
         }
 
         // ── Commands ──────────────────────────────────────────────────────────
@@ -71,10 +66,10 @@ namespace Headwind.GitSync.Presentation.ViewModels
                 await Task.WhenAll(statusTask, remoteTask);
 
                 var (branch, files) = statusTask.Result;
-                CurrentBranch  = branch;
-                Files          = files;
-                RemoteUrl      = remoteTask.Result;
-                PendingRemoteUrl = RemoteUrl; // 입력 필드를 현재 값으로 초기화
+                CurrentBranch    = branch;
+                Files            = files;
+                RemoteUrl        = remoteTask.Result;
+                PendingRemoteUrl = RemoteUrl;
 
                 SetBusy(false, files.Count == 0 ? "Working tree is clean." : string.Empty);
             }
@@ -97,15 +92,8 @@ namespace Headwind.GitSync.Presentation.ViewModels
             try
             {
                 var (success, message) = await _setRemoteUrlUseCase.ExecuteAsync(PendingRemoteUrl.Trim());
-                if (success)
-                {
-                    RemoteUrl = PendingRemoteUrl.Trim();
-                    SetBusy(false, message);
-                }
-                else
-                {
-                    SetBusy(false, message, failed: true);
-                }
+                if (success) RemoteUrl = PendingRemoteUrl.Trim();
+                SetBusy(false, message, failed: !success);
             }
             catch (Exception ex)
             {
@@ -113,7 +101,25 @@ namespace Headwind.GitSync.Presentation.ViewModels
             }
         }
 
-        public async void SyncAsync()
+        /// <summary>git pull --rebase</summary>
+        public async void FetchAsync()
+        {
+            if (IsBusy) return;
+            SetBusy(true, "Fetching…");
+            try
+            {
+                var (success, log) = await _fetchUseCase.ExecuteAsync();
+                await RefreshInternalAsync();
+                SetBusy(false, success ? "Fetch 완료." : $"Fetch 실패:\n{log}", failed: !success);
+            }
+            catch (Exception ex)
+            {
+                SetBusy(false, $"Fetch 오류: {ex.Message}", failed: true);
+            }
+        }
+
+        /// <summary>내가 Lock한 변경 파일만 add → commit → push → unlock</summary>
+        public async void UploadAsync()
         {
             if (IsBusy) return;
             if (string.IsNullOrWhiteSpace(CommitMessage))
@@ -122,109 +128,84 @@ namespace Headwind.GitSync.Presentation.ViewModels
                 return;
             }
 
-            // ── Sync 전 LFS Lock 검증 ─────────────────────────────────────────
-            SetBusy(true, "Lock 상태 확인 중…");
-            try
+            // Lock되고 실제로 변경된 파일만 (Locked 상태 = 미변경 제외)
+            var targets = new List<string>();
+            foreach (var f in Files)
+                if (f.IsLockedByMe && f.ChangeStatus != FileChangeStatus.Locked)
+                    targets.Add(f.RelativePath);
+
+            if (targets.Count == 0)
             {
-                var blockReason = await ValidateLfsLocksAsync();
-                if (blockReason != null)
-                {
-                    SetBusy(false, blockReason, failed: true);
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                SetBusy(false, $"Lock 검증 오류: {ex.Message}", failed: true);
+                SetStatus("업로드할 파일이 없습니다. (Lock된 변경 파일 없음)", failed: true);
                 return;
             }
 
-            // Sync 전에 내가 Lock한 파일 목록을 캡처 (Sync 후 Unlock에 사용)
-            var myLockedPaths = new List<string>();
-            foreach (var f in Files)
-                if (f.IsLockedByMe) myLockedPaths.Add(f.RelativePath);
-
-            // ── Sync 실행 ─────────────────────────────────────────────────────
-            SetBusy(true, "Syncing…");
+            SetBusy(true, $"{targets.Count}개 파일 업로드 중…");
             try
             {
-                var (success, log) = await _syncUseCase.ExecuteAsync(CommitMessage);
+                var (success, log) = await _uploadUseCase.ExecuteAsync(CommitMessage, targets);
                 if (success)
                 {
-                    // Push 성공 → Lock 걸었던 파일 자동 Unlock
+                    // Push 성공 → 업로드한 파일 Unlock
                     var unlockFailed = new List<string>();
-                    foreach (var path in myLockedPaths)
+                    foreach (var path in targets)
                     {
-                        var (unlocked, _) = await _unlockUseCase.ExecuteAsync(path);
-                        if (!unlocked) unlockFailed.Add(path);
+                        var (ok, _) = await _unlockUseCase.ExecuteAsync(path);
+                        if (!ok) unlockFailed.Add(path);
                     }
 
                     CommitMessage = string.Empty;
                     await RefreshInternalAsync();
 
-                    var statusMsg = unlockFailed.Count > 0
-                        ? $"Sync 완료. 일부 파일 Unlock 실패:\n{string.Join("\n", unlockFailed)}"
-                        : myLockedPaths.Count > 0
-                            ? $"Sync 완료. {myLockedPaths.Count}개 파일 Lock 해제됨."
-                            : "Sync 완료.";
-                    SetBusy(false, statusMsg, failed: unlockFailed.Count > 0);
+                    var msg = unlockFailed.Count > 0
+                        ? $"Upload 완료. Unlock 실패:\n{string.Join("\n", unlockFailed)}"
+                        : $"Upload 완료. {targets.Count}개 파일 Lock 해제됨.";
+                    SetBusy(false, msg, failed: unlockFailed.Count > 0);
                 }
                 else
                 {
-                    // Push 실패 → Lock 유지 (의도적)
-                    SetBusy(false, $"Sync 실패:\n{log}", failed: true);
+                    SetBusy(false, $"Upload 실패:\n{log}", failed: true);
                 }
             }
             catch (Exception ex)
             {
-                SetBusy(false, $"Sync 오류: {ex.Message}", failed: true);
+                SetBusy(false, $"Upload 오류: {ex.Message}", failed: true);
             }
         }
 
-        /// <summary>
-        /// 변경된 LFS 파일 중 내 Lock이 없거나 타인이 Lock한 경우 오류 메시지를 반환합니다.
-        /// 문제가 없으면 null을 반환합니다.
-        /// </summary>
-        private async Task<string> ValidateLfsLocksAsync()
+        /// <summary>현재 내 Lock 전체 해제</summary>
+        public async void UnlockAllAsync()
         {
-            if (Files == null || Files.Count == 0) return null;
+            if (IsBusy) return;
 
-            // 각 파일의 LFS 추적 여부를 병렬 확인
-            var checks = new List<Task<(FileState file, bool isLfs)>>();
-            foreach (var f in Files)
+            var myPaths = GitLockCache.GetMyLockedPaths();
+            if (myPaths.Count == 0)
             {
-                var file = f;
-                checks.Add(Task.Run(async () =>
-                    (file, await _isLfsTrackedUseCase.ExecuteAsync(file.RelativePath))));
-            }
-            var results = await Task.WhenAll(checks);
-
-            // 타인이 Lock 중인 LFS 파일
-            var lockedByOther = new List<FileState>();
-            // Lock 없이 수정된 LFS 파일
-            var notLocked = new List<FileState>();
-
-            foreach (var (file, isLfs) in results)
-            {
-                if (!isLfs) continue;
-                if (file.IsLocked && !file.IsLockedByMe) lockedByOther.Add(file);
-                else if (!file.IsLocked)                 notLocked.Add(file);
+                SetStatus("해제할 Lock이 없습니다.");
+                return;
             }
 
-            if (lockedByOther.Count > 0)
+            SetBusy(true, $"{myPaths.Count}개 Lock 해제 중…");
+            try
             {
-                var names = string.Join("\n", lockedByOther.ConvertAll(
-                    f => $"  {f.RelativePath}  ({f.LfsLock.OwnerName})"));
-                return $"다른 사용자가 Lock 중인 파일이 있어 Sync할 수 없습니다:\n{names}";
-            }
+                var failed = new List<string>();
+                foreach (var path in myPaths)
+                {
+                    var (ok, _) = await _unlockUseCase.ExecuteAsync(path);
+                    if (!ok) failed.Add(path);
+                }
 
-            if (notLocked.Count > 0)
+                await RefreshInternalAsync();
+                SetBusy(false,
+                    failed.Count > 0
+                        ? $"일부 Unlock 실패:\n{string.Join("\n", failed)}"
+                        : $"{myPaths.Count}개 Lock 모두 해제됨.",
+                    failed: failed.Count > 0);
+            }
+            catch (Exception ex)
             {
-                var names = string.Join("\n", notLocked.ConvertAll(f => $"  {f.RelativePath}"));
-                return $"Lock 없이 편집된 LFS 파일이 있습니다:\n{names}";
+                SetBusy(false, $"Unlock 오류: {ex.Message}", failed: true);
             }
-
-            return null;
         }
 
         public async void LockFileAsync(FileState file)

@@ -334,7 +334,7 @@ namespace Headwind.GitSync.Presentation.Views
         private void DrawActionArea()
         {
             EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("Commit & Sync", _sectionLabelStyle);
+            EditorGUILayout.LabelField("Commit & Upload", _sectionLabelStyle);
 
             _vm.CommitMessage = EditorGUILayout.TextArea(
                 _vm.CommitMessage,
@@ -344,10 +344,23 @@ namespace Headwind.GitSync.Presentation.Views
             using (new EditorGUI.DisabledScope(
                 _vm.IsBusy || string.IsNullOrWhiteSpace(_vm.CommitMessage)))
             {
-                if (GUILayout.Button("Sync  (add → commit → pull → push)", GUILayout.Height(30)))
-                    _vm.SyncAsync();
+                if (GUILayout.Button("Upload  (Lock 파일 → add → commit → push)", GUILayout.Height(30)))
+                    _vm.UploadAsync();
             }
 
+            EditorGUILayout.Space(4);
+            EditorGUILayout.BeginHorizontal();
+
+            using (new EditorGUI.DisabledScope(_vm.IsBusy))
+            {
+                if (GUILayout.Button("Fetch  (pull --rebase)", GUILayout.Height(24)))
+                    _vm.FetchAsync();
+
+                if (GUILayout.Button("All Unlock", GUILayout.Height(24), GUILayout.Width(90)))
+                    _vm.UnlockAllAsync();
+            }
+
+            EditorGUILayout.EndHorizontal();
             EditorGUILayout.Space(2);
         }
 

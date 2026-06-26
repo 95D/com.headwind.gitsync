@@ -70,11 +70,11 @@ namespace Headwind.GitSync.Data
         // ── git lfs locks ────────────────────────────────────────────────────
 
         /// <summary>
-        /// Parses tab-separated <c>git lfs locks</c> output into a dictionary keyed by
-        /// repo-relative file path.
+        /// Parses tab-separated <c>git lfs locks [--verify]</c> output into a dictionary
+        /// keyed by repo-relative file path.
         /// </summary>
-        /// <param name="lfsLocksOutput">Raw stdout from <c>git lfs locks</c>.</param>
-        /// <param name="currentUserName">Value of <c>git config user.name</c> for the local user.</param>
+        /// <param name="lfsLocksOutput">Raw stdout from the command.</param>
+        /// <param name="currentUserName">Value of <c>git config user.name</c> (fallback 판별용).</param>
         public static Dictionary<string, LfsLockInfo> ParseLfsLocks(
             string lfsLocksOutput, string currentUserName)
         {
@@ -82,7 +82,8 @@ namespace Headwind.GitSync.Data
             if (string.IsNullOrWhiteSpace(lfsLocksOutput))
                 return result;
 
-            // Expected line format:  <path>\t<owner>\tID:<id>
+            // --verify 출력 형식: <path>\t<owner>\tID:<id>\t(Our lock)
+            // 일반 출력 형식:      <path>\t<owner>\tID:<id>
             foreach (var line in lfsLocksOutput.Split('\n'))
             {
                 var trimmed = line.Trim();
@@ -95,18 +96,24 @@ namespace Headwind.GitSync.Data
 
                 var filePath  = parts[0].Trim().Replace('\\', '/');
                 var ownerName = parts[1].Trim();
-                var lockIdRaw = parts[2].Trim(); // "ID:123"
+                var lockIdRaw = parts[2].Trim();
                 var lockId    = lockIdRaw.StartsWith("ID:", StringComparison.OrdinalIgnoreCase)
                     ? lockIdRaw.Substring(3)
                     : lockIdRaw;
+
+                // --verify 사용 시 서버가 "(Our lock)" 마커를 붙여줌 → 가장 신뢰할 수 있는 판별 방법.
+                // 마커가 없으면 git config user.name 비교로 fallback.
+                bool isOurs = (parts.Length >= 4 &&
+                               parts[3].Trim().Equals("(Our lock)", StringComparison.OrdinalIgnoreCase))
+                           || string.Equals(ownerName, currentUserName,
+                                            StringComparison.OrdinalIgnoreCase);
 
                 result[filePath] = new LfsLockInfo
                 {
                     FilePath    = filePath,
                     OwnerName   = ownerName,
                     LockId      = lockId,
-                    IsOwnedByMe = string.Equals(ownerName, currentUserName,
-                                                StringComparison.OrdinalIgnoreCase),
+                    IsOwnedByMe = isOurs,
                 };
             }
 

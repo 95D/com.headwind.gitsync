@@ -43,8 +43,11 @@ namespace Headwind.GitSync.Data
             var fileStates = GitDataParser.ParseGitStatus(statusTask.Result.Stdout);
             var userName   = userTask.Result;
 
-            // LFS locks — best-effort, silently ignored when LFS is not installed
-            var locksResult = await GitProcessUtility.RunAsync(_repoRoot, "lfs locks");
+            // LFS locks — --verify 로 서버가 직접 소유권을 마킹하도록 요청.
+            // 실패(오프라인·구버전 git-lfs)하면 일반 lfs locks 로 fallback.
+            var locksResult = await GitProcessUtility.RunAsync(_repoRoot, "lfs locks --verify");
+            if (!locksResult.IsSuccess)
+                locksResult = await GitProcessUtility.RunAsync(_repoRoot, "lfs locks");
             if (locksResult.IsSuccess)
             {
                 var locks = GitDataParser.ParseLfsLocks(locksResult.Stdout, userName);

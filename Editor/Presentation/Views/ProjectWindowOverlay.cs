@@ -49,13 +49,19 @@ namespace Headwind.GitSync.Presentation.Views
             // Refresh overlay cache every time the GitSync window data changes.
             // We use a periodic refresh via EditorApplication.update as a fallback.
             EditorApplication.update += OnEditorUpdate;
-            RefreshCacheAsync();
+
+            // Defer the initial refresh until after domain reload completes.
+            // Calling RefreshCacheAsync() directly in the static constructor would
+            // capture Unity's SynchronizationContext, whose message loop is not pumped
+            // during domain reload — causing the async continuation to never resume (hang).
+            EditorApplication.delayCall += RefreshCacheAsync;
         }
 
         // ── Periodic refresh ─────────────────────────────────────────────────
 
         private static double _lastRefreshTime = -999;
         private const double RefreshIntervalSeconds = 30;
+        private static bool _isRefreshing = false;
 
         private static void OnEditorUpdate()
         {
@@ -74,14 +80,21 @@ namespace Headwind.GitSync.Presentation.Views
 
         private static async void RefreshCacheAsync()
         {
+            // Prevent concurrent refreshes: a previous call may still be awaiting git output.
+            if (_isRefreshing) return;
+            _isRefreshing = true;
             _lastRefreshTime = EditorApplication.timeSinceStartup;
+
             try
             {
                 var repoRoot   = System.IO.Path.GetDirectoryName(Application.dataPath);
                 var repository = new GitRepository(repoRoot);
                 var useCase    = new GetGitStatusUseCase(repository);
 
-                var (_, files) = await useCase.ExecuteAsync();
+                // ConfigureAwait(false): do not marshal the continuation back to Unity's
+                // SynchronizationContext. The git work runs on thread-pool threads and needs
+                // no Unity main-thread access until we are ready to update the cache.
+                var (_, files) = await useCase.ExecuteAsync().ConfigureAwait(false);
 
                 var newCache = new Dictionary<string, FileState>();
                 foreach (var f in files)
@@ -90,14 +103,21 @@ namespace Headwind.GitSync.Presentation.Views
                     var key = f.RelativePath.TrimStart('/');
                     newCache[key] = f;
                 }
-                _stateCache = newCache;
 
-                // Ask Unity to repaint the Project window
-                EditorApplication.RepaintProjectWindow();
+                // Post Unity API calls back to the main thread via delayCall.
+                EditorApplication.delayCall += () =>
+                {
+                    _stateCache = newCache;
+                    EditorApplication.RepaintProjectWindow();
+                };
             }
             catch
             {
                 // Silently swallow errors — overlay is non-critical
+            }
+            finally
+            {
+                _isRefreshing = false;
             }
         }
 

@@ -22,7 +22,7 @@ namespace Headwind.GitSync.Domain.UseCases
             var branchTask = _repository.GetCurrentBranchAsync();
             var filesTask  = _repository.GetStatusAsync();
 
-            await Task.WhenAll(branchTask, filesTask);
+            await Task.WhenAll(branchTask, filesTask).ConfigureAwait(false);
 
             return (branchTask.Result, filesTask.Result);
         }

@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using Headwind.GitSync.Data;
@@ -27,6 +30,20 @@ namespace Headwind.GitSync.Presentation.Views
         private GitSyncViewModel _vm;
         private Vector2 _fileListScroll;
         private bool _remoteExpanded = false; // 접기/펼치기 상태
+
+        // ── File tree state ───────────────────────────────────────────────────
+
+        /// <summary>Directory tree built from <see cref="GitSyncViewModel.Files"/>.</summary>
+        private TreeNode _rootNode;
+
+        /// <summary>Files 리스트 참조가 바뀌었는지 감지하기 위한 캐시 키.</summary>
+        private object _lastFilesRef;
+
+        /// <summary>폴더 경로별 확장 상태 (없으면 확장으로 간주).</summary>
+        private readonly Dictionary<string, bool> _folderExpanded =
+            new Dictionary<string, bool>();
+
+        private const int IndentPixels = 14;
 
         // ── GUI styles (lazy-init) ────────────────────────────────────────────
 
@@ -254,8 +271,27 @@ namespace Headwind.GitSync.Presentation.Views
         private void DrawFileList()
         {
             EditorGUILayout.Space(4);
+
+            // 섹션 헤더 + Expand/Collapse all 버튼
+            EditorGUILayout.BeginHorizontal();
             EditorGUILayout.LabelField("Changes & Locks", _sectionLabelStyle);
+            GUILayout.FlexibleSpace();
+            using (new EditorGUI.DisabledScope(_vm.Files == null || _vm.Files.Count == 0))
+            {
+                if (GUILayout.Button("Expand all", EditorStyles.miniButton, GUILayout.Width(78)))
+                    SetAllFoldersExpanded(true);
+                if (GUILayout.Button("Collapse all", EditorStyles.miniButton, GUILayout.Width(88)))
+                    SetAllFoldersExpanded(false);
+            }
+            EditorGUILayout.EndHorizontal();
             EditorGUILayout.Space(2);
+
+            // Files 리스트 참조가 바뀌면 트리 재구성
+            if (!ReferenceEquals(_lastFilesRef, _vm.Files))
+            {
+                _lastFilesRef = _vm.Files;
+                _rootNode = BuildTree(_vm.Files);
+            }
 
             _fileListScroll = EditorGUILayout.BeginScrollView(
                 _fileListScroll, GUILayout.ExpandHeight(true));
@@ -266,18 +302,61 @@ namespace Headwind.GitSync.Presentation.Views
                     _vm.IsBusy ? "Loading…" : "No changes detected.",
                     MessageType.None);
             }
-            else
+            else if (_rootNode != null)
             {
-                foreach (var file in _vm.Files)
-                    DrawFileRow(file);
+                foreach (var child in EnumerateOrderedChildren(_rootNode))
+                    DrawTreeNode(child, 0);
             }
 
             EditorGUILayout.EndScrollView();
         }
 
-        private void DrawFileRow(FileState file)
+        // ── Tree rendering ────────────────────────────────────────────────────
+
+        /// <summary>동일 depth 안에서 폴더가 먼저, 그 다음 파일 순으로 정렬.</summary>
+        private static IEnumerable<TreeNode> EnumerateOrderedChildren(TreeNode node)
         {
-            EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
+            foreach (var c in node.Children.Values.Where(c => c.IsFolder))
+                yield return c;
+            foreach (var c in node.Children.Values.Where(c => !c.IsFolder))
+                yield return c;
+        }
+
+        private void DrawTreeNode(TreeNode node, int depth)
+        {
+            if (node.IsFolder)
+                DrawFolderNode(node, depth);
+            else
+                DrawFileNode(node, depth);
+        }
+
+        private void DrawFolderNode(TreeNode node, int depth)
+        {
+            bool expanded = IsFolderExpanded(node.FullPath);
+
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Space(depth * IndentPixels + 2);
+
+            var label = (expanded ? "▾ " : "▸ ") + node.Name;
+            // 폴더 자체는 Lock 대상이 아님 — 클릭 시 접기/펼치기만 수행
+            if (GUILayout.Button(label, EditorStyles.label, GUILayout.ExpandWidth(true)))
+                _folderExpanded[node.FullPath] = !expanded;
+
+            EditorGUILayout.EndHorizontal();
+
+            if (expanded)
+            {
+                foreach (var child in EnumerateOrderedChildren(node))
+                    DrawTreeNode(child, depth + 1);
+            }
+        }
+
+        private void DrawFileNode(TreeNode node, int depth)
+        {
+            var file = node.File;
+
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Space(depth * IndentPixels + 2);
 
             var (statusLabel, statusColor) = GetStatusDisplay(file.ChangeStatus);
             var prevColor = GUI.color;
@@ -285,11 +364,93 @@ namespace Headwind.GitSync.Presentation.Views
             GUILayout.Label(statusLabel, EditorStyles.boldLabel, GUILayout.Width(22));
             GUI.color = prevColor;
 
-            GUILayout.Label(file.RelativePath, GUILayout.ExpandWidth(true));
+            GUILayout.Label(node.Name, GUILayout.ExpandWidth(true));
             DrawLockIndicator(file);
-            DrawLockToggleButton(file);
+
+            // .meta 파일은 LFS 대상이 아니라 Lock 불가 — 버튼 자리는 비워둠
+            if (IsMetaFile(file.RelativePath))
+                GUILayout.Label(string.Empty, GUILayout.Width(52));
+            else
+                DrawLockToggleButton(file);
 
             EditorGUILayout.EndHorizontal();
+        }
+
+        // ── Tree building / state helpers ─────────────────────────────────────
+
+        private static bool IsMetaFile(string path)
+            => !string.IsNullOrEmpty(path)
+               && path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase);
+
+        private bool IsFolderExpanded(string path)
+            => !_folderExpanded.TryGetValue(path, out var v) || v; // default: expanded
+
+        private void SetAllFoldersExpanded(bool expanded)
+        {
+            if (_rootNode == null) return;
+            var stack = new Stack<TreeNode>();
+            foreach (var c in _rootNode.Children.Values) stack.Push(c);
+            while (stack.Count > 0)
+            {
+                var n = stack.Pop();
+                if (!n.IsFolder) continue;
+                _folderExpanded[n.FullPath] = expanded;
+                foreach (var c in n.Children.Values) stack.Push(c);
+            }
+        }
+
+        private static TreeNode BuildTree(List<FileState> files)
+        {
+            var root = new TreeNode { Name = string.Empty, FullPath = string.Empty, IsFolder = true };
+            if (files == null) return root;
+
+            foreach (var file in files)
+            {
+                if (string.IsNullOrEmpty(file?.RelativePath)) continue;
+
+                var parts = file.RelativePath.Split('/');
+                var node = root;
+                var accum = string.Empty;
+
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    var part = parts[i];
+                    accum = accum.Length == 0 ? part : accum + "/" + part;
+                    bool isLeaf = (i == parts.Length - 1);
+
+                    if (!node.Children.TryGetValue(part, out var child))
+                    {
+                        child = new TreeNode
+                        {
+                            Name     = part,
+                            FullPath = accum,
+                            IsFolder = !isLeaf,
+                        };
+                        node.Children[part] = child;
+                    }
+
+                    if (isLeaf)
+                    {
+                        child.IsFolder = false;
+                        child.File     = file;
+                    }
+
+                    node = child;
+                }
+            }
+            return root;
+        }
+
+        /// <summary>디렉터리 트리의 노드. 폴더 또는 파일(리프)을 표현.</summary>
+        private class TreeNode
+        {
+            public string Name;
+            public string FullPath;
+            public bool IsFolder;
+            public FileState File; // null when IsFolder
+
+            public readonly SortedDictionary<string, TreeNode> Children =
+                new SortedDictionary<string, TreeNode>(StringComparer.OrdinalIgnoreCase);
         }
 
         private void DrawLockIndicator(FileState file)

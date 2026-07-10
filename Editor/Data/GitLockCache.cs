@@ -7,8 +7,7 @@ namespace Headwind.GitSync.Data
 {
     /// <summary>
     /// 컴포넌트 간 공유하는 LFS Lock 상태 인메모리 캐시.
-    /// GitRepository.GetStatusAsync() 호출 시 갱신되며,
-    /// AutoLockProcessor 가 저장 시점에 동기적으로 읽어 사용합니다.
+    /// GitRepository.GetStatusAsync() 호출 시 갱신됩니다.
     /// </summary>
     public static class GitLockCache
     {

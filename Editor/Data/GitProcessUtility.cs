@@ -36,18 +36,22 @@ namespace Headwind.GitSync.Data
         /// </summary>
         /// <param name="workingDirectory">Absolute path of the git repository root.</param>
         /// <param name="arguments">Arguments passed directly to git (e.g. "status --porcelain").</param>
-        public static Task<ProcessResult> RunAsync(string workingDirectory, string arguments)
+        /// <param name="stdinInput">Optional data written to git's stdin (used with e.g. check-attr --stdin).</param>
+        public static Task<ProcessResult> RunAsync(
+            string workingDirectory, string arguments, string stdinInput = null)
         {
-            return Task.Run(() => RunBlocking(workingDirectory, arguments));
+            return Task.Run(() => RunBlocking(workingDirectory, arguments, stdinInput));
         }
 
-        internal static ProcessResult RunBlocking(string workingDirectory, string arguments)
+        internal static ProcessResult RunBlocking(
+            string workingDirectory, string arguments, string stdinInput = null)
         {
             var startInfo = new ProcessStartInfo
             {
                 FileName               = GitExecutable,
                 Arguments              = arguments,
                 WorkingDirectory       = workingDirectory,
+                RedirectStandardInput  = stdinInput != null,
                 RedirectStandardOutput = true,
                 RedirectStandardError  = true,
                 StandardOutputEncoding = Encoding.UTF8,
@@ -75,6 +79,13 @@ namespace Headwind.GitSync.Data
                 process.Start();
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
+
+                if (stdinInput != null)
+                {
+                    process.StandardInput.Write(stdinInput);
+                    process.StandardInput.Close();
+                }
+
                 process.WaitForExit();
             }
             catch (Exception ex)

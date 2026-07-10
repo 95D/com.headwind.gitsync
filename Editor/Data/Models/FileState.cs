@@ -28,6 +28,12 @@ namespace Headwind.GitSync.Data.Models
         /// </summary>
         public LfsLockInfo LfsLock { get; set; }
 
+        /// <summary>
+        /// True when the file is tracked by Git LFS (i.e., lockable).
+        /// Default true so that files remain visible when check-attr resolution fails.
+        /// </summary>
+        public bool IsLfsTracked { get; set; } = true;
+
         /// <summary>Convenience: true when any lock exists on this file.</summary>
         public bool IsLocked => LfsLock != null;
 

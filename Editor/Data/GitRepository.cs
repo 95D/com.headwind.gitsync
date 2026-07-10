@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -35,7 +36,9 @@ namespace Headwind.GitSync.Data
 
         public async Task<List<FileState>> GetStatusAsync()
         {
-            var statusTask = GitProcessUtility.RunAsync(_repoRoot, "status --porcelain");
+            // --untracked-files=all: 새 폴더를 하나의 엔트리로 집약하지 않고 내부 파일까지 개별 나열
+            // (기본 'normal' 모드는 "?? Assets/NewFolder/" 처럼 trailing slash를 붙여서 트리 구성이 깨짐)
+            var statusTask = GitProcessUtility.RunAsync(_repoRoot, "status --porcelain --untracked-files=all");
             var userTask   = GetCurrentUserNameAsync();
             await Task.WhenAll(statusTask, userTask).ConfigureAwait(false);
 
@@ -59,7 +62,7 @@ namespace Headwind.GitSync.Data
                     if (!kvp.Value.IsOwnedByMe) continue;
                     var path = kvp.Key;
                     bool alreadyListed = fileStates.Any(f =>
-                        string.Equals(f.RelativePath, path, System.StringComparison.OrdinalIgnoreCase));
+                        string.Equals(f.RelativePath, path, StringComparison.OrdinalIgnoreCase));
                     if (!alreadyListed)
                     {
                         fileStates.Add(new FileState
@@ -72,7 +75,45 @@ namespace Headwind.GitSync.Data
                 }
             }
 
+            await PopulateLfsTrackedAsync(fileStates).ConfigureAwait(false);
+
             return fileStates;
+        }
+
+        /// <summary>
+        /// <c>git check-attr --stdin filter</c> 을 배치 호출해 각 파일의 LFS 추적 여부를 채웁니다.
+        /// 명령 실패 시 <see cref="FileState.IsLfsTracked"/> 기본값(true)이 유지되어
+        /// UI가 파일을 숨기지 않도록 안전하게 동작합니다.
+        /// </summary>
+        private async Task PopulateLfsTrackedAsync(List<FileState> fileStates)
+        {
+            if (fileStates == null || fileStates.Count == 0) return;
+
+            var stdin = string.Join("\n", fileStates.Select(f => f.RelativePath));
+            var result = await GitProcessUtility
+                .RunAsync(_repoRoot, "check-attr --stdin filter", stdin)
+                .ConfigureAwait(false);
+            if (!result.IsSuccess) return;
+
+            // 결과 라인 형식: "<path>: filter: <value>" (value = "lfs" 이면 LFS 추적 대상)
+            var byPath = new Dictionary<string, FileState>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in fileStates)
+                byPath[f.RelativePath] = f;
+
+            foreach (var rawLine in result.Stdout.Split('\n'))
+            {
+                var line = rawLine.TrimEnd('\r');
+                if (string.IsNullOrEmpty(line)) continue;
+
+                var sepIdx = line.LastIndexOf(": filter:", StringComparison.Ordinal);
+                if (sepIdx < 0) continue;
+
+                var path  = line.Substring(0, sepIdx);
+                var value = line.Substring(sepIdx + ": filter:".Length).Trim();
+
+                if (byPath.TryGetValue(path, out var state))
+                    state.IsLfsTracked = string.Equals(value, "lfs", StringComparison.Ordinal);
+            }
         }
 
         public async Task<(bool success, string log)> FetchAsync()

@@ -302,7 +302,13 @@ namespace Headwind.GitSync.Presentation.Views
                     _vm.IsBusy ? "Loading…" : "No changes detected.",
                     MessageType.None);
             }
-            else if (_rootNode != null)
+            else if (_rootNode == null || _rootNode.Children.Count == 0)
+            {
+                EditorGUILayout.HelpBox(
+                    "Lock 대상 파일 변경 없음 (.meta / 비LFS 텍스트 변경만 존재)",
+                    MessageType.None);
+            }
+            else
             {
                 foreach (var child in EnumerateOrderedChildren(_rootNode))
                     DrawTreeNode(child, 0);
@@ -399,6 +405,18 @@ namespace Headwind.GitSync.Presentation.Views
             }
         }
 
+        /// <summary>
+        /// 트리에 노출할 파일인지 판정.
+        /// .meta 파일과 LFS 비추적(락 대상 아님) 파일은 뷰에서 숨김.
+        /// 페어링 로직은 원본 Files 리스트를 사용하므로 여기 필터의 영향을 받지 않음.
+        /// </summary>
+        private static bool ShouldShowInTree(FileState file)
+        {
+            if (file == null) return false;
+            if (IsMetaFile(file.RelativePath)) return false;
+            return file.IsLfsTracked;
+        }
+
         private static TreeNode BuildTree(List<FileState> files)
         {
             var root = new TreeNode { Name = string.Empty, FullPath = string.Empty, IsFolder = true };
@@ -407,6 +425,7 @@ namespace Headwind.GitSync.Presentation.Views
             foreach (var file in files)
             {
                 if (string.IsNullOrEmpty(file?.RelativePath)) continue;
+                if (!ShouldShowInTree(file)) continue;
 
                 var parts = file.RelativePath.Split('/');
                 var node = root;

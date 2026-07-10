@@ -38,6 +38,11 @@ namespace Headwind.GitSync.Data
 
                 path = path.Replace('\\', '/');
 
+                // Defensive: git status가 디렉터리 단위로 집약해 trailing '/'를 붙이는 경우가 있음.
+                // (--untracked-files=all 사용 시 원칙적으로 발생하지 않지만 안전하게 제거)
+                path = path.TrimEnd('/');
+                if (string.IsNullOrEmpty(path)) continue;
+
                 var changeStatus = DetermineStatus(indexStatus, workStatus);
                 result.Add(new FileState
                 {
